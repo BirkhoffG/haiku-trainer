@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "haiku-trainer"
+  site-url: "https://birkhoffg.github.io/haiku-trainer"
+  description: ""
+  repo-branch: main
+  repo-url: "https://github.com/birkhoffg/haiku-trainer"
