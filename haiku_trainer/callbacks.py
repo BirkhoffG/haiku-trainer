@@ -12,26 +12,126 @@ from .trainer import TrainState, Trainer
 from tqdm import tqdm
 
 # %% auto 0
-__all__ = ['Callback']
+__all__ = ['Callback', 'CallbackList']
 
 # %% ../nbs/01_callbacks.ipynb 2
 class Callback:
-    __every_n = 1
     __trainer: Trainer = None
 
     @property
-    def every_n(self): return self.__every_n
-
-    @property
     def trainer(self): return self.__trainer
-
-    def every(self, n: int):
-        self.__every_n = n
-        return self
     
     def init_trainer(self, trainer: Trainer):
         self.__trainer = trainer
         return self
+
+    def on_epoch_begin(self, state: TrainState): pass
+
+    def on_epoch_end(self, state: TrainState): pass
+
+    def on_train_batch_begin(self, state: TrainState): pass
+
+    def on_train_batch_end(self, state: TrainState): pass
+
+    def on_train_begin(self, state: TrainState): pass
+
+    def on_train_end(self, state: TrainState): pass
+
+    def on_val_batch_begin(self, state: TrainState): pass
+
+    def on_val_batch_end(self, state: TrainState): pass
+
+    def on_val_begin(self, state: TrainState): pass
+
+    def on_val_end(self, state: TrainState): pass
     
-    def __call__(self, train_state: TrainState):
-        raise NotImplementedError
+    # __all__ = [
+    #     "on_epoch_begin",
+    #     "on_epoch_end",
+    #     "on_predict_batch_begin",
+    #     "on_predict_batch_end",
+    #     "on_predict_begin",
+    #     "on_predict_end",
+    #     "on_test_batch_begin",
+    #     "on_test_batch_end",
+    #     "on_test_begin",
+    #     "on_test_end",
+    #     "on_train_batch_begin",
+    #     "on_train_batch_end",
+    #     "on_train_begin",
+    #     "on_train_end",
+    # ]
+
+# %% ../nbs/01_callbacks.ipynb 3
+class CallbackList:
+
+    def __init__(
+        self,
+        callbacks: List[Callback] = None,
+        add_history: bool = True,
+        add_progbar: bool = True,
+        trainer: Trainer = None,
+        **kwargs
+    ):
+        self.callbacks = callbacks if callbacks else []
+        self._check_callbacks()
+        self._add_default_callbacks(add_history, add_progbar)
+
+        if trainer is not None:
+            self.init_trainer(trainer)
+
+    def append(self, callback: Callback):
+        self.callbacks.append(callback)
+
+    def __iter__(self):
+        return iter(self.callbacks)
+
+    def _check_callbacks(self):
+        for cb in self.callbacks:
+            if not isinstance(cb, Callback):
+                raise TypeError(
+                    "All callbacks must be instances of `Callback` "
+                    f"got {type(cb).__name__}."
+                )
+
+    def _add_default_callbacks(self, add_history: bool, add_progbar: bool):
+        pass
+
+    def init_trainer(self, trainer: Trainer):
+        for callback in self.callbacks:
+            callback.init_trainer(trainer)
+        
+    def _call_hook(self, hook_name, state):
+        for callback in self.callbacks:
+            batch_hook = getattr(callback, hook_name)
+            batch_hook(state)
+
+    def on_epoch_begin(self, state: TrainState):
+        self._call_hook("on_epoch_begin", state)
+
+    def on_epoch_end(self, state: TrainState):
+        self._call_hook("on_epoch_end", state)
+
+    def on_train_batch_begin(self, state: TrainState):
+        self._call_hook("on_train_batch_begin", state)
+
+    def on_train_batch_end(self, state: TrainState):
+        self._call_hook("on_train_batch_end", state)
+
+    def on_train_begin(self, state: TrainState):
+        self._call_hook("on_train_begin", state)
+
+    def on_train_end(self, state: TrainState):
+        self._call_hook("on_train_end", state)
+
+    def on_val_batch_begin(self, state: TrainState):
+        self._call_hook("on_val_batch_begin", state)
+
+    def on_val_batch_end(self, state: TrainState):
+        self._call_hook("on_val_batch_end", state)
+
+    def on_val_begin(self, state: TrainState):
+        self._call_hook("on_val_begin", state)
+
+    def on_val_end(self, state: TrainState):
+        self._call_hook("on_val_end", state)

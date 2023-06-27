@@ -10,9 +10,10 @@ from dataclasses import dataclass
 import functools as ft
 from typing import Callable, Tuple, Any, Sequence, Iterable, Mapping, Dict, List, NamedTuple
 import copy
+from .callbacks import Callback, CallbackList
 
 # %% auto 0
-__all__ = ['TrainState', 'Trainer', 'StepFn', 'TrainStepFn', 'ValStepFn']
+__all__ = ['TrainState', 'Trainer', 'StepFn', 'DefaultStepFn']
 
 # %% ../nbs/00_trainer.ipynb 4
 class TrainState(NamedTuple):
@@ -24,6 +25,9 @@ class TrainState(NamedTuple):
     next_key: jrand.PRNGKey
     logs: dict = None
 
+    def __eq__(self, compare: TrainState) -> bool:
+        return (self.epoch == compare.epoch) and (self.step == compare.step)
+
 # %% ../nbs/00_trainer.ipynb 5
 @dataclass
 class Trainer:
@@ -32,9 +36,8 @@ class Trainer:
     rng_key: jrand.PRNGKey = None
 
     # callback functions
-    callbacks: List[Any] = None
-    train_step_fn: TrainStepFn = None
-    val_step_fn: ValStepFn = None
+    callbacks: Sequence[Callback] = None
+    step_fn: StepFn = None
 
     # trainer configs
     lr: float = 1e-3
@@ -51,44 +54,43 @@ class Trainer:
         if self.rng_key is None:    return jrand.PRNGKey(42) # TODO: use global
         else:                       return self.rng_key
 
-    def _initialize_model_param_and_state(
-        self, key: jrand.PRNGKey, shape: Sequence[int]
-    ):
-        params, state = self.transformed.init(key, jnp.zeros(shape))
-        return params, state
-
-    def _initialize_opt_state(self, params: hk.Params):
-        # if isinstance(self.optimizers, Sequence):
-        #     return [opt.init(params) for opt in self.optimizers]
-        if isinstance(self.optimizers, optax.GradientTransformation):
-            return self.optimizers.init(params) 
+    def _initialize_callbacks(self):
+        if self.callbacks is None:
+            self.callbacks = CallbackList()
+        elif isinstance(self.callbacks, CallbackList):
+            self.callbacks = self.callbacks
+        elif isinstance(self.callbacks, Sequence):
+            self.callbacks = CallbackList(self.callbacks)
         else:
-            raise ValueError(f"Invalid optimizers. Expected `optax` optimizers.")
+            raise ValueError(f"Invalid callbacks. Expected `CallbackList` or `Sequence[Callback]`.")
+
+        self.callbacks.init_trainer(self)
+
+    def _initialize_step_fn(self):
+        if self.step_fn is None:
+            self.step_fn = DefaultStepFn(trainer=self)
+        else:
+            if isinstance(self.step_fn, StepFn):
+                self.step_fn.init_trainer(self)
+            else:
+                raise ValueError(f"Invalid `Trainer.step_fn`. Expected `StepFn`, but got `{type(self.step_fn)}`.")
     
-    # def _initialize_step_fns(self):
-    #     if self.train_step_fn is None:
-    #         self.train_step_fn = TrainStepFn(self)
-
-    #     if self.val_step_fn is None:
-    #         self.val_step_fn = ValStepFn(self)
-
-    def _initialize(self, batch: Tuple[jax.Array, ...]):
-        xs_shape = batch[0].shape
-        key1, next_key = jrand.split(self._initialize_key())
-        params, state = self._initialize_model_param_and_state(key1, shape=xs_shape)
-        opt_states = self._initialize_opt_state(params)
-        self._train_state = TrainState(
-            epoch=0, step=0,
-            params=params, state=state, 
-            opt_state=opt_states,
-            next_key=next_key,
-        )
-        # self._initialize_step_fns()
+    def _initialize(self):
+        self._initialize_callbacks()
+        self._initialize_step_fn()
         
-    def _run_callbacks(self):
-        if self.callbacks is not None:
-            for callback in self.callbacks:
-                callback(self.train_state)
+    def _run_callbacks(self, hook_name: str):
+        hook_fn = getattr(self.callbacks, hook_name, None)
+        if hook_fn is not None:
+            hook_fn(self.train_state)
+
+    def _run_step_fn(self, step_name: str, batch: Tuple[jax.Array, ...], validate: bool = False):
+        step_fn = getattr(self.step_fn, step_name)
+        train_state = step_fn(self.train_state, batch)
+
+        if validate and train_state == self.train_state:
+            raise ValueError(f"Train state is not updated after `{step_name}`.")
+        self.update_train_state(train_state)
 
     def update_train_state(self, train_state: TrainState = None, **kwargs):
         if train_state is None and kwargs == {}:
@@ -97,86 +99,110 @@ class Trainer:
             train_state = self.train_state._replace(**kwargs)
         self._train_state = train_state
 
-    def train_step(self, batch: Tuple[jax.Array, ...]) -> None:
-        if self.train_step_fn is None:
-            self.train_step_fn = TrainStepFn(self)
-        upt_train_state = self.train_step_fn(self.train_state, batch)
-        self.update_train_state(upt_train_state)
-    
-    def val_step(self, batch: Tuple[jax.Array, ...]) -> None:
-        if self.val_step_fn is None:
-            self.val_step_fn = ValStepFn(self)
-        upt_train_state = self.val_step_fn(self.train_state, batch)
-        self.update_train_state(upt_train_state)
-
-    def validate_train_step(self, batch: Tuple[jax.Array, ...]):
-        cur_train_state = copy.deepcopy(self.train_state)
-        self.train_step(batch)
-        if cur_train_state.step == self.train_state.step:
-            raise ValueError("Train state is not updated after `train_step`.")
-
     def fit(self, train_dataloader, val_dataloader=None):
-        cur_steps = 0
+        self._initialize()
+        self._run_callbacks("on_train_begin")
         for epoch in range(self.n_epochs):
+            self._run_callbacks("on_epoch_begin")
             for batch in train_dataloader:
+                self._run_callbacks("on_train_batch_begin")
                 if self.train_state is None:
-                    self._initialize(batch)
-                    self.validate_train_step(batch)
-                else:
-                    self.train_step(batch)
-                self._run_callbacks()
-                cur_steps += 1
-                assert cur_steps == self.train_state.step
+                    self._run_step_fn("init_step", batch)
+                self._run_step_fn("train_step", batch)
+                self._run_callbacks("on_train_batch_end")
+            self._run_callbacks("on_epoch_end")
 
             if val_dataloader is not None:
+                self._run_callbacks("on_val_begin")
                 for batch in val_dataloader:
-                    self.val_step(self.train_state, batch)
-                    cur_steps += 1
-                    assert cur_steps == self.train_state.step
+                    self._run_callbacks("on_val_batch_begin")
+                    self._run_step_fn("val_step", batch)
+                    self._run_callbacks("on_val_batch_end")
+                self._run_callbacks("on_val_end")
 
-            self.update_train_state(epoch=epoch+1)
+            self._run_callbacks("on_train_end")
+            self._run_step_fn("epoch_step", batch=None)
+        
+        self._run_callbacks("on_train_end")
 
 
 # %% ../nbs/00_trainer.ipynb 7
 class StepFn:
-    def __init__(self, trainer: Trainer, *args, **kwargs) -> None:
+    def __init__(self, trainer: Trainer=None, *args, **kwargs) -> None:
+        if trainer is not None:
+            self.init_trainer(trainer)
+
+    def init_trainer(self, trainer: Trainer):
         self._trainer = trainer
 
     @property
     def trainer(self): return self._trainer
 
     @property
-    def forward(self): return self.trainer.transformed
+    def transformed(self): return self.trainer.transformed
+
+    forward = transformed
     
     @property
-    def optimizer(self): return self.trainer.optimizers
+    def optimizers(self): return self.trainer.optimizers
+
+    def init_step(self, train_state: TrainState, batch: Tuple[jax.Array, ...]) -> TrainState:
+        key1, next_key = jrand.split(self._init_key())
+        
+        params, state = self._init_params_and_state(key1, batch[0])
+        opt_states = self._init_opt_state(params)
+        return TrainState(
+            epoch=0, step=0, params=params, state=state, 
+            opt_state=opt_states, next_key=next_key,
+        )
+    
+    def epoch_step(self, train_state: TrainState, batch=None) -> TrainState:
+        return train_state._replace(epoch=train_state.epoch+1)
+    
+    def train_step(self, train_state: TrainState, batch: Tuple[jax.Array, ...]) -> TrainState:
+        raise NotImplementedError
+    
+    def val_step(self, train_state: TrainState, batch: Tuple[jax.Array, ...]) -> TrainState:
+        raise NotImplementedError
+    
+    def _init_key(self):
+        if self.trainer.rng_key is None:
+            return jrand.PRNGKey(0)
+        elif isinstance(self.trainer.rng_key, jrand.PRNGKey):
+            return self.trainer.rng_key
+        else:
+            raise ValueError(f"Invalid rng_key. Expected `jax.random.PRNGKey`.")
+
+    def _init_params_and_state(self, key: jrand.PRNGKey, xs: jax.Array):
+        params, state = self.transformed.init(key, xs)
+        return params, state
+
+    def _init_opt_state(self, params: hk.Params):
+        if isinstance(self.optimizers, optax.GradientTransformation):
+            return self.optimizers.init(params) 
+        else:
+            raise ValueError(f"Invalid optimizers. Expected `optax` optimizers.")
+
 
 # %% ../nbs/00_trainer.ipynb 8
-class TrainStepFn(StepFn):
-    loss_fn: Callable[[jax.Array, jax.Array], float] = None
-    
-    def __init__(self, trainer: Trainer, loss_fn=None) -> None:
-        super().__init__(trainer)
-        if loss_fn is None:
-            loss_fn = optax.softmax_cross_entropy_with_integer_labels
-        self.loss_fn = loss_fn
+class DefaultStepFn(StepFn):
 
     @ft.partial(jax.jit, static_argnums=(0,))
-    def __call__(self, train_state: TrainState, batch: Tuple[jax.Array, ...]):
+    def train_step(self, train_state: TrainState, batch: Tuple[jax.Array, ...]) -> TrainState:
         def loss_fn(params: hk.Params):
-            logits, new_state = self.forward.apply(
+            logits, new_state = self.transformed.apply(
                 params, state,
                 rng_key, # <== rng
                 inputs, is_training=True # <== inputs
             )
-            loss = self.loss_fn(logits, labels).mean()
+            loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
             return (loss, new_state)
         
         inputs, labels = batch
         rng_key, next_key = jrand.split(train_state.next_key)
         state = train_state.state
         (loss, new_state), grads = jax.value_and_grad(loss_fn, has_aux=True)(train_state.params)
-        updates, new_opt_state = self.optimizer.update(
+        updates, new_opt_state = self.optimizers.update(
             grads, train_state.opt_state, train_state.params)
         new_params = optax.apply_updates(train_state.params, updates)
         return TrainState(
@@ -188,33 +214,22 @@ class TrainStepFn(StepFn):
             next_key=next_key,
             logs={'train/loss': loss}
         )
-
-# %% ../nbs/00_trainer.ipynb 9
-class ValStepFn(StepFn):
-    metric_fns: Dict[str, Callable[[jax.Array, jax.Array], float]] = None
-
-    def __init__(self, trainer: Trainer, metric_fns=None) -> None:
-        super().__init__(trainer)
-        if metric_fns is None:
-            metric_fns = optax.softmax_cross_entropy_with_integer_labels
-        self.metric_fns = metric_fns
-
-    @ft.partial(jax.jit, static_argnums=(0,))
-    def __call__(self, train_state: TrainState, batch: Tuple[jax.Array, ...]):        
+    
+    def val_step(self, train_state: TrainState, batch: Tuple[jax.Array, ...]) -> TrainState:
         inputs, labels = batch
         rng_key, next_key = jrand.split(train_state.next_key)
-        logits, _ = self.forward.apply(
+        logits, _ = self.transformed.apply(
             train_state.params, train_state.state,
             rng_key, # <== rng
             inputs, is_training=False # <== inputs
         )
-        logs = {
-            f'val/{name}': metric_fn(logits, labels)
-            for name, metric_fn in self.metric_fns.items()
-        }
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
+        acc = (jnp.argmax(logits, axis=-1) == labels).mean()
+        logs = {'val/loss': loss, "val/accuracy": acc}
 
-        train_state = train_state._replace(
+        return train_state._replace(
             step=train_state.step + 1,
             next_key=next_key, logs=logs
         )
-        return train_state
+
+    
