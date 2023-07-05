@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import functools as ft
 from typing import Callable, Tuple, Any, Sequence, Iterable, Mapping, Dict, List, NamedTuple
 import copy
-from .callbacks import Callback, CallbackList
+from .callbacks import *
 
 # %% auto 0
 __all__ = ['TrainState', 'Trainer', 'StepFn', 'DefaultStepFn']

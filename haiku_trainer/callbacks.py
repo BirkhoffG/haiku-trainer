@@ -8,7 +8,7 @@ import optax
 import chex
 from typing import Callable, Tuple, Any, Sequence, Iterable, Mapping, Dict, List, NamedTuple
 import functools as ft
-from .trainer import TrainState, Trainer
+from .trainer import *
 from tqdm import tqdm
 
 # %% auto 0
