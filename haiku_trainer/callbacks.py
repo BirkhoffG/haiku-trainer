@@ -135,6 +135,3 @@ class CallbackList:
 
     def on_val_end(self, state: TrainState):
         self._call_hook("on_val_end", state)
-
-# %% ../nbs/01_callback.pbar.ipynb 0
-#| export callbacks
