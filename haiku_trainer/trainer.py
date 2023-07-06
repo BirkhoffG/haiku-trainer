@@ -43,18 +43,47 @@ class Trainer:
     lr: float = 1e-3
     n_epochs: int = 1
 
-    # model train state
-    _train_state: TrainState = None
-
     @property
-    def train_state(self):
+    def train_state(self) -> TrainState:
+        """Returns the current train state."""
         return self._train_state
 
+    @ft.cached_property
+    def num_train_batches(self) -> int:
+        """Returns the number of training batches of each epoch."""
+        loader = getattr(self, '_train_dataloader', None)
+        if loader is None:  return 0
+        else:               return len(loader)
+    
+    @property
+    def num_train_steps(self) -> int:
+        """Returns the number of training steps."""
+        return self.n_epochs * self.num_train_batches
+    
+    @property
+    def num_val_batches(self) -> int:
+        """Returns the number of validation batches of each epoch."""
+        loader = getattr(self, '_val_dataloader', None)
+        if loader is None:  return 0
+        else:               return len(loader)
+    
+    @property
+    def num_val_steps(self):
+        """Returns the number of validation steps."""
+        return self.n_epochs * self.num_val_batches
+
+    def _initialize_properties(self):
+        """Initializes `train_state`."""
+        if getattr(self, '_train_state', None) is None:
+            self._train_state = None
+    
     def _initialize_key(self):
+        """Initialize the `rng_key`."""
         if self.rng_key is None:    return jrand.PRNGKey(42) # TODO: use global
         else:                       return self.rng_key
 
     def _initialize_callbacks(self):
+        """Initializes the callbacks."""
         if self.callbacks is None:
             self.callbacks = CallbackList()
         elif isinstance(self.callbacks, CallbackList):
@@ -67,6 +96,7 @@ class Trainer:
         self.callbacks.init_trainer(self)
 
     def _initialize_step_fn(self):
+        """Initializes step fns."""
         if self.step_fn is None:
             self.step_fn = DefaultStepFn(trainer=self)
         else:
@@ -76,23 +106,59 @@ class Trainer:
                 raise ValueError(f"Invalid `Trainer.step_fn`. Expected `StepFn`, but got `{type(self.step_fn)}`.")
     
     def _initialize(self):
+        """Initializes the trainer."""
+        self._initialize_properties()
+        self._initialize_key()
         self._initialize_callbacks()
         self._initialize_step_fn()
+
+    def _update_loader(self, loader_name: str, loader=None):
+        if getattr(self, loader_name, None) is None:
+            setattr(self, loader_name, loader)
+        if loader is not None:
+            setattr(self, loader_name, loader)
+    
+    def _initialize_loaders(
+        self, 
+        train_dataloader, 
+        val_dataloader=None, 
+        test_dataloader=None
+    ):
+        """Initialize and hook dataloaders to the trainer."""
+        self._update_loader('_train_dataloader', train_dataloader)
+        self._update_loader('_val_dataloader', val_dataloader)
+        self._update_loader('_test_dataloader', test_dataloader)
         
-    def _run_callbacks(self, hook_name: str):
+    def _run_callbacks(
+        self, 
+        hook_name: str, # Should be "on_{train/val}_{epoch/batch}_{begin/end}"
+        **cb_kwargs # kwargs for the callback function
+    ):
+        """Runs the callback functions for the given hook.
+        Note that callback functions do not change the `train_state`.
+        """
         hook_fn = getattr(self.callbacks, hook_name, None)
         if hook_fn is not None:
-            hook_fn(self.train_state)
+            hook_fn(self.train_state, **cb_kwargs)
 
-    def _run_step_fn(self, step_name: str, batch: Tuple[jax.Array, ...], validate: bool = False):
+    def _run_step_fn(
+        self, 
+        step_name: str, 
+        validate: bool = False,
+        **fn_kwargs # kwargs for the step function
+    ):
+        """Runs the step function for the given step name.
+        Note that step functions change the `train_state`.
+        """
         step_fn = getattr(self.step_fn, step_name)
-        train_state = step_fn(self.train_state, batch)
+        train_state = step_fn(self.train_state, **fn_kwargs)
 
         if validate and train_state == self.train_state:
             raise ValueError(f"Train state is not updated after `{step_name}`.")
         self.update_train_state(train_state)
 
     def update_train_state(self, train_state: TrainState = None, **kwargs):
+        """Updates the `train_state`."""
         if train_state is None and kwargs == {}:
             raise ValueError("Either `train_state` or `kwargs` must be provided.")
         if train_state is None:
@@ -101,14 +167,16 @@ class Trainer:
 
     def fit(self, train_dataloader, val_dataloader=None):
         self._initialize()
+        self._initialize_loaders(train_dataloader, val_dataloader)
         self._run_callbacks("on_train_begin")
         for epoch in range(self.n_epochs):
             self._run_callbacks("on_epoch_begin")
             for batch in train_dataloader:
                 self._run_callbacks("on_train_batch_begin")
+                # Initialize the train state if it is not initialized
                 if self.train_state is None:
-                    self._run_step_fn("init_step", batch)
-                self._run_step_fn("train_step", batch)
+                    self._run_step_fn("init_step", batch=batch)
+                self._run_step_fn("train_step", batch=batch)
                 self._run_callbacks("on_train_batch_end")
             self._run_callbacks("on_epoch_end")
 
@@ -116,7 +184,7 @@ class Trainer:
                 self._run_callbacks("on_val_begin")
                 for batch in val_dataloader:
                     self._run_callbacks("on_val_batch_begin")
-                    self._run_step_fn("val_step", batch)
+                    self._run_step_fn("val_step", batch=batch)
                     self._run_callbacks("on_val_batch_end")
                 self._run_callbacks("on_val_end")
 
@@ -233,3 +301,12 @@ class DefaultStepFn(StepFn):
         )
 
     
+
+# %% ../nbs/00_trainer.ipynb 11
+def make_hk_module(output_size: int = 2):
+    """Creates a Haiku module with a linear layer and batchnorm."""
+    def model(x, is_training=True):
+        return hk.BatchNorm(True, True, 0.9)(
+            hk.Linear(output_size)(x), is_training=is_training)
+    
+    return hk.transform_with_state(model)
