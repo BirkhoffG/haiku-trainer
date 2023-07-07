@@ -3,7 +3,7 @@
 # %% auto 0
 __all__ = ['ProgbarLogger']
 
-# %% ../../nbs/01_callback.pbar.ipynb 2
+# %% ../../nbs/01_callback.pbar.ipynb 3
 from ..core import *
 import haiku as hk
 import importlib
@@ -13,14 +13,15 @@ if importlib.util.find_spec("ipywidgets") is not None:
 else:
     from tqdm import tqdm 
 
-# %% ../../nbs/01_callback.pbar.ipynb 3
+# %% ../../nbs/01_callback.pbar.ipynb 4
 def _update_pbar_n(pbar: tqdm, n: int):
     pbar.n = n
     pbar.refresh()
 
-# %% ../../nbs/01_callback.pbar.ipynb 4
+# %% ../../nbs/01_callback.pbar.ipynb 5
 class ProgbarLogger(Callback):
-    def __init__(self, ): 
+    """Progress bar to log Trainer's progress."""
+    def __init__(self): 
         self._train_pbar = None
         self._valid_pbar = None
         self._batch_idx = None
