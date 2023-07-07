@@ -25,6 +25,17 @@ class TrainState(NamedTuple):
     next_key: jrand.PRNGKey
     logs: dict = None
 
+    def is_empty(self) -> bool:
+        return self.params is None and self.opt_state is None
+    
+    @classmethod
+    def create_empty(cls) -> TrainState:
+        return cls(
+            epoch=0, step=0, 
+            params=None, state=None, opt_state=None, 
+            next_key=None, logs=None
+        )
+
     def __eq__(self, compare: TrainState) -> bool:
         return (self.epoch == compare.epoch) and (self.step == compare.step)
 
@@ -75,7 +86,7 @@ class Trainer:
     def _initialize_properties(self):
         """Initializes `train_state`."""
         if getattr(self, '_train_state', None) is None:
-            self._train_state = None
+            self._train_state = TrainState.create_empty()
     
     def _initialize_key(self):
         """Initialize the `rng_key`."""
@@ -168,14 +179,15 @@ class Trainer:
     def fit(self, train_dataloader, val_dataloader=None):
         self._initialize()
         self._initialize_loaders(train_dataloader, val_dataloader)
-        # Initialize the train state if it is not initialized
-        if self.train_state is None:
-            self._run_step_fn("init_step", batch=next(iter(train_dataloader)))
+        
         self._run_callbacks("on_train_begin")
         for epoch in range(self.n_epochs):
             self._run_callbacks("on_epoch_begin")
             for batch in train_dataloader:
                 self._run_callbacks("on_train_batch_begin")
+                # Initialize the train state if it is not initialized
+                if self.train_state.is_empty():
+                    self._run_step_fn("init_step", batch=batch)
                 self._run_step_fn("train_step", batch=batch)
                 self._run_callbacks("on_train_batch_end")
             self._run_callbacks("on_epoch_end")
