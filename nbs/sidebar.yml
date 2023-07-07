@@ -4,6 +4,7 @@ website:
       - index.ipynb
       - section: API
         contents:
+        # - doc.ipynb
         - 00_trainer.ipynb
         - section: Callbacks
           contents:

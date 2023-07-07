@@ -42,6 +42,8 @@ class TrainState(NamedTuple):
 # %% ../nbs/00_trainer.ipynb 6
 @dataclass
 class Trainer:
+    """Trainer object for training Haiku models."""
+    
     transformed: hk.TransformedWithState | hk.MultiTransformedWithState
     optimizers: optax.GradientTransformation | Sequence[optax.GradientTransformation]
     rng_key: jrand.PRNGKey = None
@@ -204,6 +206,8 @@ class Trainer:
             self._run_step_fn("epoch_step", batch=None)
         
         self._run_callbacks("on_train_end")
+
+    __ALL__ = ['fit']
 
 
 # %% ../nbs/00_trainer.ipynb 8
