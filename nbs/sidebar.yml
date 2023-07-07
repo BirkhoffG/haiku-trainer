@@ -5,4 +5,6 @@ website:
       - section: API
         contents:
         - 00_trainer.ipynb
-        - 01_callbacks.ipynb
+        - section: API
+          contents:
+          - 01_callback.pbar.ipynb
